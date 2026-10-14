@@ -1,0 +1,24 @@
+{
+  "name": "Freestyle-Frenzy",
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": {
+      "$className": "ReplicatedStorage",
+      "Beats": {
+        "$path": "src/ReplicatedStorage/Beats.luau"
+      },
+      "FreestyleModules": {
+        "$path": "src/ReplicatedStorage/FreestyleModules"
+      }
+    },
+    "StarterPlayer": {
+      "$className": "StarterPlayer",
+      "StarterPlayerScripts": {
+        "$className": "StarterPlayerScripts",
+        "FreestyleClient": {
+          "$path": "src/StarterPlayerScripts/FreestyleClient.client.luau"
+        }
+      }
+    }
+  }
+}
