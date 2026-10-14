@@ -1,0 +1,466 @@
+<roblox version="4">
+  <Item class="ModuleScript" referent="1">
+      <Properties>
+        <string name="Name">Beats</string>
+        <string name="Source">--[[
+	Beats
+	=====
+	The list of instrumentals the player can pick from on the start menu.
+
+	Each entry has:
+	  Name            - Text shown on the menu button.
+	  AssetId         - The Roblox audio asset ID (just the number).
+	  BPM             - Beats per minute of the instrumental.
+	  FirstBeatOffset - Seconds from the very start of the audio file to
+	                    beat 1 of the first bar you want to rap over.
+	                    If the ball feels EARLY, make this number bigger.
+	                    If the ball feels LATE, make this number smaller.
+	  Volume          - 0 to 1 (optional, defaults to 0.8).
+
+	All three tracks below are APM Music tracks that Roblox licensed and
+	made free to use in Roblox experiences. The BPM values come from each
+	track's Creator Store description. The FirstBeatOffset values are a
+	starting guess; tune them by ear in a playtest.
+
+	To add a beat: copy one entry, paste it at the end, change the values.
+]]
+
+export type Beat = {
+	Name: string,
+	AssetId: number,
+	BPM: number,
+	FirstBeatOffset: number,
+	Volume: number?,
+}
+
+local Beats: { Beat } = {
+	{
+		-- "Beach Cushions" (APM, album: Lofi Hip Hop) - listed at 90 bpm
+		Name = "Beach Cushions",
+		AssetId = 9047104411,
+		BPM = 90,
+		FirstBeatOffset = 0,
+		Volume = 0.8,
+	},
+	{
+		-- "Dusk To Dawn" (APM, album: Lofi Hip Hop) - listed at 80 bpm
+		Name = "Dusk To Dawn",
+		AssetId = 9047105308,
+		BPM = 80,
+		FirstBeatOffset = 0,
+		Volume = 0.8,
+	},
+	{
+		-- "Lo-fi Chill A" (APM, Hip Hop Shop library) - listed at 100 bpm.
+		-- A little faster than the 80-95 target; swap it out if you find
+		-- a better one in the Creator Store.
+		Name = "Lo-fi Chill",
+		AssetId = 9043887091,
+		BPM = 100,
+		FirstBeatOffset = 0,
+		Volume = 0.8,
+	},
+}
+
+return Beats
+</string>
+      </Properties>
+    </Item>
+    <Item class="Folder" referent="2">
+      <Properties>
+        <string name="Name">FreestyleModules</string>
+      </Properties>
+      <Item class="ModuleScript" referent="3">
+        <Properties>
+          <string name="Name">BallView</string>
+          <string name="Source">--[[
+	BallView
+	========
+	Four dots in a row (one per beat) and a ball that hops from dot to dot,
+	touching down exactly on each beat. The 4th dot is gold because that
+	is where the rhyme word lands.
+
+	It doesn't keep time itself: every frame the game calls
+	BallView:Update(beat, fraction) with values from BeatClock.
+]]
+
+local UIKit = require(script.Parent.UIKit)
+
+local BallView = {}
+BallView.__index = BallView
+
+local DOT_COUNT = 4
+local DOT_Y = 0.85 -- vertical position of the dots (0 = top, 1 = bottom)
+local DOT_SIZE = 0.07 -- dot width as a fraction of the row width
+local BALL_SIZE = 0.06
+local GROUND_Y = 0.6 -- ball's center height when touching a dot
+local HOP_HEIGHT = 0.5 -- how high the ball hops between beats
+local RETURN_HOP_HEIGHT = 0.6 -- slightly bigger hop from beat 4 back to beat 1
+local PULSE_AMOUNT = 0.5 -- how much a dot grows when the ball lands on it
+
+export type BallView = typeof(setmetatable(
+	{} :: {
+		Frame: Frame,
+		Ball: Frame,
+		Dots: { Frame },
+	},
+	BallView
+))
+
+-- X position (0-1) of each dot inside the row.
+local function dotX(index: number): number
+	return (index - 0.5) / DOT_COUNT
+end
+
+function BallView.new(parent: Instance): BallView
+	-- The row is always 4x wider than it is tall, on any screen.
+	local frame = UIKit.Create("Frame", {
+		Name = "BallRow",
+		BackgroundTransparency = 1,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.78),
+		Size = UDim2.fromScale(0.7, 0.25),
+		Parent = parent,
+	}, {
+		UIKit.AspectRatio(4),
+		UIKit.Create("UISizeConstraint", { MaxSize = Vector2.new(640, 160) }),
+	})
+
+	local dots = {}
+	for i = 1, DOT_COUNT do
+		dots[i] = UIKit.Create("Frame", {
+			Name = "Dot" .. i,
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromScale(dotX(i), DOT_Y),
+			Size = UDim2.fromScale(DOT_SIZE, DOT_SIZE * 4), -- *4 because the row is 4:1
+			BackgroundColor3 = if i == DOT_COUNT then UIKit.Colors.Accent else UIKit.Colors.Dot,
+			BorderSizePixel = 0,
+			Parent = frame,
+		}, { UIKit.Corner(0.5) })
+	end
+
+	local ball = UIKit.Create("Frame", {
+		Name = "Ball",
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(dotX(1), GROUND_Y),
+		Size = UDim2.fromScale(BALL_SIZE, BALL_SIZE * 4),
+		BackgroundColor3 = UIKit.Colors.Ball,
+		BorderSizePixel = 0,
+		ZIndex = 2,
+		Parent = frame,
+	}, { UIKit.Corner(0.5) })
+
+	return setmetatable({
+		Frame = frame,
+		Ball = ball,
+		Dots = dots,
+	}, BallView)
+end
+
+--[[
+	beat:     the beat we just landed on (1-4)
+	fraction: 0 to 1, progress toward the next beat
+
+	The ball travels from dot[beat] to the next dot in an arc
+	(sin curve), so it touches down exactly when fraction wraps to 0.
+]]
+function BallView.Update(self: BallView, beat: number, fraction: number)
+	local nextBeat = (beat % DOT_COUNT) + 1
+	local fromX = dotX(beat)
+	local toX = dotX(nextBeat)
+
+	local x = fromX + (toX - fromX) * fraction
+	local hop = if beat == DOT_COUNT then RETURN_HOP_HEIGHT else HOP_HEIGHT
+	local y = GROUND_Y - math.sin(math.pi * fraction) * hop
+
+	self.Ball.Position = UDim2.fromScale(x, y)
+
+	-- The dot that was just hit swells up and shrinks back during the beat.
+	for i, dot in self.Dots do
+		local scale = 1
+		if i == beat then
+			scale = 1 + PULSE_AMOUNT * (1 - fraction) ^ 2
+		end
+		dot.Size = UDim2.fromScale(DOT_SIZE * scale, DOT_SIZE * 4 * scale)
+	end
+end
+
+function BallView.SetVisible(self: BallView, visible: boolean)
+	self.Frame.Visible = visible
+end
+
+return BallView
+</string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="4">
+        <Properties>
+          <string name="Name">BeatClock</string>
+          <string name="Source">--[[
+	BeatClock
+	=========
+	Turns a playing Sound into "where are we in the music?" answers:
+	which bar, which beat (1-4), and how far we are between beats.
+
+	All timing comes from Sound.TimePosition (the audio's real playhead),
+	never from wait() or task.wait(). If the game lags for a moment, the
+	next frame reads the playhead again and everything snaps back on beat.
+
+	Usage:
+		local clock = BeatClock.new(sound, 90, 0.25)
+		-- every frame:
+		clock:Update(deltaTime)
+		local info = clock:GetBeatInfo()
+		print(info.Bar, info.Beat, info.Fraction)
+]]
+
+local BeatClock = {}
+BeatClock.__index = BeatClock
+
+-- Sound.TimePosition can update a little unevenly from frame to frame,
+-- which would make the ball stutter. We keep our own smooth copy of the
+-- time and gently pull it toward TimePosition every frame.
+-- If they ever differ by more than MAX_DRIFT seconds (a lag spike, a
+-- loop, a seek), we jump straight to the real TimePosition.
+local MAX_DRIFT = 0.08
+local CORRECTION = 0.15
+
+export type BeatInfo = {
+	BeatPosition: number, -- total beats since bar 1 beat 1 (negative before it)
+	Bar: number, -- 1-based bar number (0 or less during the intro)
+	Beat: number, -- 1, 2, 3 or 4 inside the bar
+	Fraction: number, -- 0 to 1, how far we are toward the next beat
+}
+
+export type BeatClock = typeof(setmetatable(
+	{} :: {
+		Sound: Sound,
+		SecondsPerBeat: number,
+		FirstBeatOffset: number,
+		_loops: number,
+		_lastTimePosition: number,
+		_smoothTime: number,
+	},
+	BeatClock
+))
+
+function BeatClock.new(sound: Sound, bpm: number, firstBeatOffset: number): BeatClock
+	local self = setmetatable({
+		Sound = sound,
+		SecondsPerBeat = 60 / bpm,
+		FirstBeatOffset = firstBeatOffset,
+		_loops = 0, -- how many times a looping Sound has wrapped around
+		_lastTimePosition = sound.TimePosition,
+		_smoothTime = sound.TimePosition,
+	}, BeatClock)
+	return self
+end
+
+-- Call once per frame (from RenderStepped) with the frame's delta time.
+function BeatClock.Update(self: BeatClock, deltaTime: number)
+	local sound = self.Sound
+	local timePosition = sound.TimePosition
+	local length = sound.TimeLength
+
+	-- If the Sound is Looped, TimePosition jumps back to 0 at the end.
+	-- Count those wraps so our song time keeps going up.
+	if length &gt; 0 and timePosition + length * 0.5 &lt; self._lastTimePosition then
+		self._loops += 1
+	end
+	self._lastTimePosition = timePosition
+
+	local realTime = self._loops * length + timePosition
+
+	if sound.IsPlaying then
+		-- Predict where the playhead should be now, then nudge toward
+		-- the real value so we stay locked to the audio.
+		local predicted = self._smoothTime + deltaTime * sound.PlaybackSpeed
+		local drift = realTime - predicted
+		if math.abs(drift) &gt; MAX_DRIFT then
+			self._smoothTime = realTime
+		else
+			self._smoothTime = predicted + drift * CORRECTION
+		end
+	else
+		self._smoothTime = realTime
+	end
+end
+
+-- Seconds since the audio started (keeps counting across loops).
+function BeatClock.GetSongTime(self: BeatClock): number
+	return self._smoothTime
+end
+
+-- Works out bar / beat / fraction from the current song time.
+function BeatClock.GetBeatInfo(self: BeatClock): BeatInfo
+	local beatPosition = (self._smoothTime - self.FirstBeatOffset) / self.SecondsPerBeat
+	local wholeBeats = math.floor(beatPosition)
+
+	return {
+		BeatPosition = beatPosition,
+		Bar = math.floor(wholeBeats / 4) + 1,
+		Beat = (wholeBeats % 4) + 1,
+		Fraction = beatPosition - wholeBeats,
+	}
+end
+
+return BeatClock
+</string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="5">
+        <Properties>
+          <string name="Name">BeatPlayer</string>
+          <string name="Source">--[[
+	BeatPlayer
+	==========
+	Creates the Sound for a beat and waits for it to load.
+
+	The Sound is created by a LocalScript and parented to SoundService,
+	so only this player hears it. Every player gets their own beat.
+]]
+
+local ContentProvider = game:GetService("ContentProvider")
+local SoundService = game:GetService("SoundService")
+
+local Beats = require(script.Parent.Parent:WaitForChild("Beats"))
+
+local BeatPlayer = {}
+
+-- Makes a Sound for the beat and waits until the audio is ready.
+-- Returns the Sound, or nil plus an error message if it can't load
+-- (wrong ID, audio is private, no permission, etc).
+function BeatPlayer.Load(beat: Beats.Beat): (Sound?, string?)
+	local sound = Instance.new("Sound")
+	sound.Name = "FreestyleBeat"
+	sound.SoundId = "rbxassetid://" .. tostring(beat.AssetId)
+	sound.Volume = beat.Volume or 0.8
+	-- Loop so short instrumentals still last a full 32-bar session.
+	sound.Looped = true
+	sound.Parent = SoundService
+
+	-- PreloadAsync waits until the audio is downloaded (or fails).
+	local ok, err = pcall(function()
+		ContentProvider:PreloadAsync({ sound })
+	end)
+
+	if not ok or not sound.IsLoaded or sound.TimeLength &lt;= 0 then
+		sound:Destroy()
+		local reason = if ok then "audio did not load" else tostring(err)
+		return nil, `Couldn't load beat "{beat.Name}" (ID {beat.AssetId}): {reason}`
+	end
+
+	return sound, nil
+end
+
+return BeatPlayer
+</string>
+        </Properties>
+      </Item>
+      <Item class="ModuleScript" referent="6">
+        <Properties>
+          <string name="Name">UIKit</string>
+          <string name="Source">--[[
+	UIKit
+	=====
+	Small helpers for building UI in code, plus the shared colors and
+	fonts. Every size uses Scale (a fraction of the screen) so the same
+	layout works on phones and computers.
+]]
+
+local UIKit = {}
+
+-- Shared look for all screens.
+UIKit.Colors = {
+	Background = Color3.fromRGB(20, 18, 32),
+	Panel = Color3.fromRGB(38, 34, 60),
+	Text = Color3.fromRGB(255, 255, 255),
+	SubText = Color3.fromRGB(170, 165, 200),
+	Accent = Color3.fromRGB(255, 196, 0), -- beat 4 / rhyme highlight
+	Dot = Color3.fromRGB(90, 84, 130),
+	Ball = Color3.fromRGB(255, 255, 255),
+	Button = Color3.fromRGB(70, 62, 120),
+	ButtonSelected = Color3.fromRGB(255, 196, 0),
+}
+
+UIKit.Font = Enum.Font.FredokaOne
+
+--[[
+	Create an Instance, set its properties, and parent children to it.
+
+		UIKit.Create("TextLabel", { Text = "Hi" }, { UIKit.Corner(0.2) })
+
+	"Parent" is applied last so the object is fully set up before it
+	appears on screen.
+]]
+function UIKit.Create(className: string, properties: { [string]: any }?, children: { Instance }?): any
+	local instance = Instance.new(className)
+	local parent = nil
+
+	if properties then
+		for key, value in properties do
+			if key == "Parent" then
+				parent = value
+			else
+				(instance :: any)[key] = value
+			end
+		end
+	end
+
+	if children then
+		for _, child in children do
+			child.Parent = instance
+		end
+	end
+
+	instance.Parent = parent
+	return instance
+end
+
+-- Rounded corners. 0.5 makes a circle on a square frame.
+function UIKit.Corner(scale: number): UICorner
+	return UIKit.Create("UICorner", { CornerRadius = UDim.new(scale, 0) })
+end
+
+-- Keeps width:height locked so things stay the right shape on any screen.
+function UIKit.AspectRatio(ratio: number): UIAspectRatioConstraint
+	return UIKit.Create("UIAspectRatioConstraint", { AspectRatio = ratio })
+end
+
+-- Stops scaled text from getting too tiny or too huge.
+function UIKit.TextSize(minSize: number, maxSize: number): UITextSizeConstraint
+	return UIKit.Create("UITextSizeConstraint", { MinTextSize = minSize, MaxTextSize = maxSize })
+end
+
+-- A text label with scaled text, transparent background, centered.
+function UIKit.Label(properties: { [string]: any }, maxTextSize: number?): TextLabel
+	local defaults = {
+		BackgroundTransparency = 1,
+		Font = UIKit.Font,
+		TextColor3 = UIKit.Colors.Text,
+		TextScaled = true,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+	}
+	for key, value in properties do
+		defaults[key] = value
+	end
+	return UIKit.Create("TextLabel", defaults, { UIKit.TextSize(10, maxTextSize or 60) })
+end
+
+-- The ScreenGui that holds every screen of the game for this player.
+function UIKit.CreateScreenGui(playerGui: PlayerGui): ScreenGui
+	return UIKit.Create("ScreenGui", {
+		Name = "FreestyleFrenzyGui",
+		ResetOnSpawn = false, -- keep the UI if the character respawns
+		IgnoreGuiInset = true, -- use the full screen, including the top bar
+		ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+		Parent = playerGui,
+	})
+end
+
+return UIKit
+</string>
+        </Properties>
+      </Item>
+    </Item>
+  </roblox>
